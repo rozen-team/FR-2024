@@ -37,8 +37,9 @@ class ObjectSearcher:
 
         self.objects = []
 
-        self.debug_pub = rospy.Publisher("/a/fires_debug", Image)
-        self.objects_pub = rospy.Publisher("/a/fires_viz", MarkerArray)
+        self.debug_pub = rospy.Publisher("/a/objects_debug", Image, queue_size=1)
+        self.mask_pub = rospy.Publisher("/a/objects_mask", Image, queue_size=1)
+        self.objects_pub = rospy.Publisher("/a/objects_viz", MarkerArray, queue_size=1)
 
     # Метод создает маску по заданным пороговым значениям (для определения пожаров)
     def mask_overlay(self, frame):
@@ -158,14 +159,17 @@ class ObjectSearcher:
                 mannualy_contour.append(end)
 
         mannualy_contour = np.array(mannualy_contour).reshape((-1,1,2)).astype(np.int32)
-        #cv2.drawContours(debug, [mannualy_contour], 0, (0,255,0), 3)
+        if len(mannualy_contour) > 0:
+            cv2.drawContours(debug, [mannualy_contour], 0, (255,0,0), 3)
 
         mask_floor = np.zeros(mask_floor.shape, dtype="uint8")
-        mask_floor = cv2.fillPoly(mask_floor, pts = [mannualy_contour], color=(255,255,255))
-
+        if len(mannualy_contour) > 0:
+            mask_floor = cv2.fillPoly(mask_floor, pts = [mannualy_contour], color=(255,255,255))
         mask = cv2.bitwise_and(mask_overlay, mask_overlay, mask=mask_floor)
 
         masks = [mask]
+
+        self.mask_pub.publish(self.cv_bridge.cv2_to_imgmsg(mask, "mono8"))
 
         # Проходимся по маскам для нахождения пожаров и пострадавших
         for idx, m in enumerate(masks):

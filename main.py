@@ -22,16 +22,19 @@ class VideoSource:
         File = 0
         Topic = 1
 
-    def __init__(self, callback, source: str = "/main_camera/image_raw_throttled", type: SourceType = SourceType.Topic):
+    def __init__(self, callback, bridge: CvBridge, source: str = "/main_camera/image_raw_throttled", type: SourceType = SourceType.Topic):
         self.source = source
         self.type = type
         self.callback = callback
+        self.bridge = bridge
 
         if self.type == self.SourceType.File:
             # Для тестирования кода (с использованием видео)
             self.cap = cv2.VideoCapture(self.source)
             if not self.cap:
                 raise Exception(f"Couldn`t open video file {self.source}")
+            else:
+                print(f"Successfully open video file {self.source}")
 
             # Тестовые значения
             self.cm = np.array([[ 92.37552066, 0., 160.5], [0., 92.37552066, 120.5], [0., 0., 1.]], dtype="float64")
@@ -76,10 +79,10 @@ class NodeHandle:
         self.bridge = CvBridge()
         self.is_start = False
 
-        self.floor_mask_pub = rospy.Publisher("/a/floor_mask", Image)
-        self.path_pub = rospy.Publisher("/a/path_points", MarkerArray)
+        self.floor_mask_pub = rospy.Publisher("/a/floor_mask", Image, queue_size=1)
+        self.path_pub = rospy.Publisher("/a/path_points", MarkerArray, queue_size=1)
 
-        self.video_source = VideoSource(self.callback, source, type)
+        self.video_source = VideoSource(callback=self.callback, source=source, type=type, bridge=self.bridge)
 
         self.tf_buffer = tf2_ros.Buffer()
         self.listener = tf2_ros.TransformListener(self.tf_buffer)
@@ -160,6 +163,7 @@ def main():
     rospy.init_node('first_task', anonymous=True)
     
     try:
+        #node = NodeHandle(source="output_1.avi", type=VideoSource.SourceType.File)
         node = NodeHandle()
 
         node.enable()
