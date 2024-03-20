@@ -14,13 +14,16 @@ import requests
 class ObjectSearcher:
     # Пороговые значения HSV для определения пожаров и пострадавших соответственно
     lower_thr = (
-        (0, 30, 80),
-        (170, 30, 80)
+        (0, 50, 80),
+        (170, 50, 80)
     )
     upper_thr = (
-        (35, 255, 255),
+        (8, 255, 255),
         (180, 255, 255)
     )
+
+    blue_lower_thr = (105, 50, 80)
+    blue_upper_thr = (130, 255, 255)
 
     # Параметры определения пожаров
     fire_fraction = 0.0035
@@ -37,6 +40,8 @@ class ObjectSearcher:
 
         self.objects = []
 
+        self.is_start = False
+
         self.debug_pub = rospy.Publisher("/a/objects_debug", Image, queue_size=1)
         self.mask_pub = rospy.Publisher("/a/objects_mask", Image, queue_size=1)
         self.objects_pub = rospy.Publisher("/a/objects_viz", MarkerArray, queue_size=1)
@@ -51,13 +56,18 @@ class ObjectSearcher:
         mask = cv2.erode(mask, None, iterations=2)
         mask = cv2.dilate(mask, None, iterations=2)
 
-        return mask
+        mask_blue = cv2.inRange(frame, self.blue_lower_thr, self.blue_upper_thr)
+        mask_blue = cv2.erode(mask_blue, None, iterations=2)
+        mask_blue = cv2.dilate(mask_blue, None, iterations=2)
+
+
+        return [mask, mask_blue]
 
     # Метод, публикующий маркеры пожаров в rviz
     def publish_markers(self):
         result = []
         iddd = 0
-        for fs in self.objects:
+        for fs, idx in self.objects:
             # На основе множества распознаваний одного пострадавшего формируем усредненные координаты
             m = np.mean(fs, axis=0)
 
@@ -66,7 +76,7 @@ class ObjectSearcher:
             marker.header.stamp = rospy.Time.now()
             marker.ns = "color_markers"
             marker.id = iddd
-            marker.type =  Marker.CUBE
+            marker.type =  Marker.CYLINDER
             marker.action = Marker.ADD
 
             # Позиция и ориентация
@@ -79,16 +89,19 @@ class ObjectSearcher:
             marker.pose.orientation.w = 1.0
             
             # Масштаб
-            marker.scale.x = 0.2
-            marker.scale.y = 0.2
-            marker.scale.z = 0.1
+            marker.scale.x = 0.15
+            marker.scale.y = 0.15
+            marker.scale.z = 0.05
 
             # Цвет
             marker.color.a = 0.8
 
-            marker.color.r = 1
-            marker.color.g = 0.1
-            marker.color.b = 0
+            color = [1.0, 0.1, 0.0]
+            if idx == 1: color = [0, 0.1, 1.0]
+
+            marker.color.r = color[0]
+            marker.color.g = color[1]
+            marker.color.b = color[2]
 
             result.append(marker)
             iddd += 1
@@ -98,37 +111,55 @@ class ObjectSearcher:
         return None
 
     # 
-    def find_closest(self, point, tuple_obj):
+    def find_closest(self, point, tuple_obj, idxss):
         distances = []
         for fire in tuple_obj:
-            distances.append((fire[0][0] - point[0]) ** 2 + (fire[0][1] - point[1]) ** 2)
+            m = np.mean(fire[0], axis=0)
+
+            if fire[1] != idxss:
+                distances.append(float('inf'))
+                continue
+
+            distances.append((m[0] - point[0]) ** 2 + (m[1] - point[1]) ** 2)
         
         min_dist = min(distances)
         return distances.index(min_dist), min_dist
 
-    def insert_object(self, point):
+    def insert_object(self, point, idxss):
         if len(self.objects) == 0:
-            self.objects.append([point])
+            self.objects.append([[point], idxss])
             return
 
-        idx, distance = self.find_closest(point, self.objects)
+        idx, distance = self.find_closest(point, self.objects, idxss)
         if distance <= self.fire_radius:
-            self.objects[idx].append(point)
+            self.objects[idx][0].append(point)
             return
-        self.objects.append([point])
+        self.objects.append([[point], idxss])
 
     # Вспомогательный метод для определения расстояния между 2 точками
     def distance(self, a, b):
         return (a[0] - b[0]) ** 2 + (a[1] - b[1]) ** 2
 
+    def enable(self):
+        self.is_start = True
+
+    def disable(self):
+        self.is_start = False
+
     def on_frame(self, frame, mask_floor, hsv: Optional[np.ndarray] = None):
+        self.publish_markers()
+
+        if not self.is_start:
+            return
+
         if hsv is None:
             hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
 
         # Создаем маски для нахождения пожаров и пострадавших
         debug = frame.copy()
-        mask_overlay = self.mask_overlay(hsv)
+        mask_overlays = self.mask_overlay(hsv)
         
+        """
         # Создаем маску для пола площадки
         contours_floor = cv2.findContours(mask_floor, 
                 cv2.RETR_EXTERNAL, 
@@ -165,11 +196,15 @@ class ObjectSearcher:
         mask_floor = np.zeros(mask_floor.shape, dtype="uint8")
         if len(mannualy_contour) > 0:
             mask_floor = cv2.fillPoly(mask_floor, pts = [mannualy_contour], color=(255,255,255))
-        mask = cv2.bitwise_and(mask_overlay, mask_overlay, mask=mask_floor)
+        """
 
-        masks = [mask]
+        masks = []
+        global_mask = np.zeros(frame.shape[:2], dtype="uint8")
+        for mask in mask_overlays:
+            masks.append(cv2.bitwise_and(mask, mask))
+            global_mask = cv2.bitwise_or(masks[-1], global_mask)
 
-        self.mask_pub.publish(self.cv_bridge.cv2_to_imgmsg(mask, "mono8"))
+        self.mask_pub.publish(self.cv_bridge.cv2_to_imgmsg(global_mask, "mono8"))
 
         # Проходимся по маскам для нахождения пожаров и пострадавших
         for idx, m in enumerate(masks):
@@ -226,8 +261,8 @@ class ObjectSearcher:
                     ray_o = t_wb
 
                     pnts = [intersect_ray_plane(v, ray_o) for v in ray_v]
-                    [self.insert_object(p[:2]) for p in pnts if p is not None]
+                    [self.insert_object(p[:2], idx) for p in pnts if p is not None]
 
         # Публикуем маркеры rviz и изображения дл отладки
-        self.publish_markers()
+        #self.publish_markers()
         self.debug_pub.publish(self.cv_bridge.cv2_to_imgmsg(debug, "bgr8"))
