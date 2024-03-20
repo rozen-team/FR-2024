@@ -84,7 +84,15 @@ class BuildingsDetector:
         min_dist = min(distances)
         return distances.index(min_dist), min_dist
 
-    def insert_object(self, point, data):
+    def insert_object(self, point, color):
+        self.target_map = {
+            'red': 0.5,
+            'yellow': 0.75,
+            'blue': 1.0,
+            'green': 0.25
+        }
+        data = BuildingsData(target_height=self.target_map[color])
+
         if len(self.objects) == 0:
             self.objects.append([[point], data])
             return
@@ -143,6 +151,7 @@ class BuildingsDetector:
         return d
 
     def on_frame(self, image):
+        """
         debug = image.copy()
 
         self.publish_markers()
@@ -168,8 +177,64 @@ class BuildingsDetector:
 
 
         self.debug_pub.publish(self.cv_bridge.cv2_to_imgmsg(debug, "bgr8"))
+        """
 
-    def cast_points(self, points, data):
+        debug = image.copy()
+        self.publish_markers()
+
+        self.masks_dict = {
+            'blue': [(105, 50, 80), (105, 50, 80)],
+            'green': [(0, 0, 0), (0, 0, 0)],
+            'red': [(0, 0, 0), (0, 0, 0)],
+            'yellow': [(0, 0, 0), (0, 0, 0)]
+        }
+
+        if self.is_start:
+            masks = dict()
+
+            hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
+            global_mask = np.zeros(frame.shape[:2], dtype="uint8")
+            for key_mask in self.masks_dict:
+                low_thr = self.masks_dict[key_mask]
+                up_thr = self.masks_dict[key_mask]
+
+                masks[key_mask] = cv2.inRange(hsv, low_thr, up_thr)
+                global_mask = cv2.bitwise_or(masks[key_mask], global_mask)
+
+            self.mask_pub.publish(self.cv_bridge.cv2_to_imgmsg(global_mask, "mono8"))
+        
+            for key in masks:
+                m = masks[key]
+                contours = cv2.findContours(m, 
+                        cv2.RETR_EXTERNAL, 
+                        cv2.CHAIN_APPROX_SIMPLE)[-2]
+
+                frame_vol = np.prod(frame.shape[0:2])
+
+                # Фильтруем объекты по площади
+                assert frame_vol != 0
+                contours = list(filter(
+                        lambda c: (cv2.contourArea(c) / frame_vol) >= 0.0035 and (cv2.contourArea(c) / frame_vol) < 0.2, 
+                        contours))
+
+                # Находим центры объектов в кадре
+                points = []
+                for cnt in contours:
+                    M = cv2.moments(cnt)
+
+                    if M["m00"] == 0:
+                        continue
+
+                    points.append(
+                            [int(M["m10"] / (M["m00"])),
+                            int(M["m01"] / (M["m00"]))])
+                    cv2.drawContours(debug, [cnt], 0, (0, 127, 255), 3)
+
+                self.cast_points(points, key)
+
+            self.debug_pub.publish(self.cv_bridge.cv2_to_imgmsg(debug, "bgr8"))
+
+    def cast_points(self, points, color):
         # Находим координаты объекта, относительно aruco_map
         if len(points) > 0:
             points = np.array(points).astype(np.float64)
@@ -194,4 +259,4 @@ class BuildingsDetector:
                 ray_o = t_wb
 
                 pnts = [intersect_ray_plane(v, ray_o) for v in ray_v]
-                [self.insert_object(p[:2], data[i]) for i, p in enumerate(pnts) if p is not None]
+                [self.insert_object(p[:2], color) for i, p in enumerate(pnts) if p is not None]

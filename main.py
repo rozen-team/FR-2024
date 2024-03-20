@@ -338,8 +338,8 @@ class NodeHandle:
 def main():
     rospy.init_node('first_task', anonymous=True)
     
-    BUILDINGS_LEFT_BOTTOM = (1, 1)
-    BUILDINGS_RIGHT_TOP = (6, 4)
+    BUILDINGS_LEFT_BOTTOM = (4.0, 1.0)
+    BUILDINGS_RIGHT_TOP = (7.0, 4.0)
     BUILDINGS_CENTER = (float(BUILDINGS_LEFT_BOTTOM[0] + BUILDINGS_RIGHT_TOP[0]) / 2.0,
                         float(BUILDINGS_LEFT_BOTTOM[1] + BUILDINGS_RIGHT_TOP[1]) / 2.0)
 
@@ -354,7 +354,7 @@ def main():
     LINE_VEL = 0.2
 
     ENABLE_BUILDINGS = True
-    ENABLE_LINE = True
+    ENABLE_LINE = False
 
 
     try:
