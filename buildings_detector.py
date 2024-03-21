@@ -228,7 +228,7 @@ class BuildingsDetector:
                     points.append(
                             [int(M["m10"] / (M["m00"])),
                             int(M["m01"] / (M["m00"]))])
-                    cv2.drawContours(debug, [cnt], 0, (0, 127, 255), 3)
+                    cv2.drawContours(debug, [cnt], 0, (0, 127, 127), 3)
 
                 self.cast_points(points, key)
 

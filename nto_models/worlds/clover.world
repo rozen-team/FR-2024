@@ -6,42 +6,76 @@
     </include>
 
     <include>
-      <uri>model://aruco_cmit_txt</uri>
-    </include>
-
-    <include>
       <uri>model://floor_dark</uri>
       <pose>0 0 -0.01 0 0 0</pose>
     </include>
 
-    <!-- <include>
-      <uri>model://wall_1525</uri>
-      <name>8_wall</name>
-
-      <pose>6.73 3.96 0 0 0 0</pose>
+    <include>
+      <uri>model://aruco_cmit_txt</uri>
     </include>
 
     <include>
-      <uri>model://wall_1525</uri>
-      <name>9_wall</name>
+      <uri>model://box-25</uri>
+      <name>box_25-1</name>
 
-      <pose>4.4 1.47 0 0 0 0</pose>
-    </include> -->
-
-    <include>
-      <uri>model://redSquare</uri>
-      <name>redSquare_1</name>
-
-      <pose>5.0 2.5 0 0 0 0</pose>
+      <pose>1.54635 3.2342 0.0 0 0 1.5708</pose>
     </include>
 
-  <!--
+    <include>
+      <uri>model://box-50</uri>
+      <name>box_50-1</name>
+
+      <pose>4.091 2.34534 0.0 0 0 3.1415</pose>
+    </include>
+
+    <include>
+      <uri>model://box-75</uri>
+      <name>box_75-1</name>
+
+      <pose>2.45 1.47 0.0 0 0 0</pose>
+    </include>
+
+    <include>
+      <uri>model://box-100</uri>
+      <name>box_100-1</name>
+
+      <pose>5.809 2.89 0.0 0 0 0</pose>
+    </include>
+
+    <include>
+      <uri>model://line-15</uri>
+      <name>line-15-1</name>
+
+      <pose>2.0 0.5 0.0 0 0 0</pose>
+    </include>
+
+    <include>
+      <uri>model://line-fat-15</uri>
+      <name>line-fat-15-1</name>
+
+      <pose>3.5 0.425738 0.0 0 0 0</pose>
+    </include>
+
+    <include>
+      <uri>model://line-15</uri>
+      <name>line-15-2</name>
+
+      <pose>5.0 0.5 0.0 0 0 0</pose>
+    </include>
+
     <include>
       <uri>model://redSquare</uri>
-      <name>redSquare_2</name>
+      <name>redSquare-1</name>
 
-      <pose>4 4 0 0 0 0</pose>
-    </include>-->
+      <pose>3.0 0.15 0.01 0 0 0</pose>
+    </include>
+
+    <include>
+      <uri>model://blueSquare</uri>
+      <name>blueSquare-1</name>
+
+      <pose>4.0 0.85 0.01 0 0 0</pose>
+    </include>
 
     <scene>
       <ambient>0.8 0.8 0.8 1</ambient>

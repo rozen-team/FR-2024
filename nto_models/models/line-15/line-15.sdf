@@ -1,0 +1,24 @@
+<?xml version="1.0"?>
+<sdf version="1.5">
+    <model name="line-15">
+        <static>true</static>
+        <link name="line-15_link">
+            <pose>0.0 0.0 1e-3 0 0 0</pose>
+            <visual name="visual_line-15">
+                <cast_shadows>false</cast_shadows>
+                <geometry>
+                    <box>
+                        <size>1.5 0.15 1e-3</size>
+                    </box>
+                </geometry>
+                <material>
+                    <script>
+                        <uri>model://line-15/materials/scripts</uri>
+                        <uri>model://line-15/materials/textures</uri>
+                        <name>line/line-15</name>
+                    </script>
+                </material>
+            </visual>
+        </link>
+    </model>
+</sdf>

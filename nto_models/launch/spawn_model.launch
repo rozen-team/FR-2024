@@ -54,5 +54,5 @@
         <arg name="optical_flow" default="false" if="$(eval type == 'jmavsim')"/>
         <arg name="led" default="false" if="$(eval type == 'jmavsim')"/>
     </include>
-<node name="sensor" pkg="clover_simulation" required="true" type="sensor.py" output="screen"></node>
+   <!--<node name="sensor" pkg="clover_simulation" required="true" type="sensor.py" output="screen"></node>-->
 </launch>

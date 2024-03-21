@@ -1,0 +1,15 @@
+material box100/qr-code
+{
+    technique
+    {
+        pass
+        {
+            texture_unit
+            {
+                texture qr-code100.png
+                filtering none
+                scale 1.0 1.0
+            }
+        }
+    }
+}

@@ -1,0 +1,15 @@
+material line/line-15
+{
+    technique
+    {
+        pass
+        {
+            texture_unit
+            {
+                texture line-15.png
+                filtering none
+                scale 1.0 1.0
+            }
+        }
+    }
+}
