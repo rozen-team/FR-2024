@@ -15,11 +15,12 @@ from clover import srv
 from std_srvs.srv import Trigger
 from sensor_msgs.msg import Range
 
-from detector import *
+from workers_detector import *
 from buildings_detector import *
+from line_follower import *
+from line_processor import *
+from server import *
 import time
-
-from math import pi, fmod
 
 class VideoSource:
     class SourceType(Enum):
@@ -62,61 +63,104 @@ class VideoSource:
         self.callback(self.bridge.cv2_to_imgmsg(frame, "bgr8"))
 
 class NodeHandle:
-    # Пороговые значения для пола
-    floor_thr = [
-        np.array([0, 0, 0]),
-        np.array([180, 255, 120])
-    ]
-
     FLIGHT_HEIGHT = 2.0
-    LINE_HEIGHT = 1.0
+    LINE_HEIGHT = 0.9
 
     def __init__(self, source: str = "/main_camera/image_raw_throttled", type: VideoSource.SourceType = VideoSource.SourceType.Topic):
         self.get_telemetry = rospy.ServiceProxy('get_telemetry', srv.GetTelemetry)
         self.navigate = rospy.ServiceProxy('navigate', srv.Navigate)
-        self.navigate_global = rospy.ServiceProxy('navigate_global', srv.NavigateGlobal)
-        self.set_position = rospy.ServiceProxy('set_position', srv.SetPosition)
-        self.set_velocity = rospy.ServiceProxy('set_velocity', srv.SetVelocity)
-        self.set_attitude = rospy.ServiceProxy('set_attitude', srv.SetAttitude)
-        self.set_rates = rospy.ServiceProxy('set_rates', srv.SetRates)
         self.land = rospy.ServiceProxy('land', Trigger)
-        self.set_yaw_rate = rospy.ServiceProxy('set_yaw_rate', srv.SetYawRate)
 
         self.bridge = CvBridge()
-        self.is_start = False
+        self.is_enable = False
         self.is_screenshot_handled = False
-
-        self.line_end = False
-        self.is_reversing = False
-        self.reverse_yaw = 0.0
-        # коэффициент поворота за линией
-        self.k_angle = -0.006
-        # коэффициент движения по оси Y за линией
-        self.k_velocity_y = -0.006
-        # скорость движения за линией
-        self.line_velocity = 0.097
-        self.line_end_thr = 15.0
-        # время, которое должно пройти с исчезновения линии для возвращения на точку старта
-        self.line_end_thr = 3.0
-        self.line_end_time = 0.0
-        self.first_reverse = True
-
-        self.is_line_enabled = False
-
 
         self.screenshot_name = 'empty'
 
-        self.floor_mask_pub = rospy.Publisher("/a/floor_mask", Image, queue_size=1)
-        self.qr_debug_pub = rospy.Publisher("/a/qr_debug", Image, queue_size=1)
-        self.line_debug_pub = rospy.Publisher("/a/line_debug", Image, queue_size=1)
-        self.path_pub = rospy.Publisher("/a/path_points", MarkerArray, queue_size=1)
-
         self.video_source = VideoSource(callback=self.callback, source=source, type=type, bridge=self.bridge)
+        self.rest_client = RESTClient("dfd3bad5-4ff7-4826-a2be-ee3b7bde078b")
 
         self.tf_buffer = tf2_ros.Buffer()
         self.listener = tf2_ros.TransformListener(self.tf_buffer)
-        self.objects_searcher = ObjectSearcher(cm=self.video_source.cm, dc=self.video_source.dc, tf_buffer=self.tf_buffer, cv_bridge=self.bridge)
-        self.buildings_searcher = BuildingsDetector(cm=self.video_source.cm, dc=self.video_source.dc, tf_buffer=self.tf_buffer, cv_bridge=self.bridge)
+        self.workers_searcher = WorkersSearcher(
+            workers_data=
+                [
+                    WorkersData(shape=Marker.CUBE, thresholds=
+                        [
+                            ((77, 128, 157), (131, 255, 255))
+                        ], 
+                        color=(150, 70, 0)
+                    ),
+                    WorkersData(shape=Marker.CYLINDER, thresholds=
+                        [
+                            ((0, 98, 129), (12, 255, 255)),
+                            ((170, 98, 129), (180, 255, 255))
+                        ], 
+                        color=(0, 70, 150)
+                    )
+                ],
+            cm=self.video_source.cm, 
+            dc=self.video_source.dc, 
+            tf_buffer=self.tf_buffer, 
+            bridge=self.bridge, 
+            debug_publisher=True
+        )
+
+        self.buildings_searcher = BuildingsDetector(
+            buildings_data=
+                [
+                    BuildingsData(
+                        thresholds=
+                            [
+                                ((28, 52, 110), (43, 255, 255))
+                            ],
+                        target_height=1
+                    ),
+                    BuildingsData(
+                        thresholds=
+                            [
+                                ((57, 87, 136), (75, 255, 255))
+                            ],
+                        target_height=2
+                    ),
+                    BuildingsData(
+                        thresholds=
+                            [
+                                ((77, 128, 157), (131, 255, 255))
+                            ],
+                        target_height=3
+                    ),
+                    BuildingsData(
+                        thresholds=
+                            [
+                                ((0, 98, 129), (12, 255, 255)),
+                                ((170, 98, 129), (180, 255, 255))
+                            ],
+                        target_height=4
+                    )
+                ],
+            rest_cient=self.rest_client,
+            cm=self.video_source.cm, 
+            dc=self.video_source.dc, 
+            tf_buffer=self.tf_buffer, 
+            cv_bridge=self.bridge,
+            debug_publisher=True
+        )
+
+        self.line_follower = LineFollower(
+            line_threshold=[(28, 52, 110), (43, 255, 255)],
+            bridge=self.bridge,
+            target_height=self.LINE_HEIGHT, 
+            debug_publisher=True, 
+            k_velocity_z=0.35
+        )
+
+        self.line_processor = LineProcessor(
+            hsv_threshold=[(28, 52, 110), (43, 255, 255)],
+            cm=self.video_source.cm, 
+            dc=self.video_source.dc, 
+            tf_buffer=self.tf_buffer
+        )
 
     def takeoff(self, use_height=False, takeoff_thr=0.1):
         dist = 0.0
@@ -125,7 +169,7 @@ class NodeHandle:
             dist = rospy.wait_for_message('rangefinder/range', Range).range
         
         if abs(dist) <= max(takeoff_thr, 0.1):
-            self.navigate_wait(z=self.FLIGHT_HEIGHT, speed = 0.6, frame_id='body', auto_arm=True)
+            self.navigate_wait(z=1.6, speed = 0.6, frame_id='body', auto_arm=True)
             rospy.sleep(2)
             print(f'Successfully takeoff!')
 
@@ -143,32 +187,10 @@ class NodeHandle:
             rospy.sleep(0.2)
 
     def enable(self):
-        self.is_start = True
+        self.is_enable = True
 
     def disable(self):
-        self.is_start = False
-
-    # Метод, создающий маску для полаы
-    def floor_mask(self, hsv):
-        hsv = cv2.blur(hsv, (10, 10))
-        mask = cv2.inRange(hsv, self.floor_thr[0], self.floor_thr[1])
-
-        mask = cv2.erode(mask, None, iterations=2)
-        mask = cv2.dilate(mask, None, iterations=2)
-        
-        contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
-        
-        mask = np.zeros(mask.shape, dtype="uint8")
-        for cnt in contours:
-            approx = cv2.approxPolyDP(cnt, 0.001 * cv2.arcLength(cnt, True), True)
-            
-            area = cv2.contourArea(approx)
-            if area < 600:
-                continue
-        
-            mask = cv2.fillPoly(mask, pts = [approx], color=(255,255,255))
-        
-        return mask
+        self.is_enable = False
 
     # Callback-метод топика с изображением
     def callback(self, msg):
@@ -178,162 +200,37 @@ class NodeHandle:
             print(e)
             return
 
-        if not self.is_start:
+        if not self.is_enable:
             return
 
         if self.is_screenshot_handled:
             cv2.imwrite(f'{self.screenshot_name}.png', image)
             self.is_screenshot_handled = False
 
-        line_debug = image.copy()
-        if self.is_line_enabled:
-            line_debug = self.line_detect(image)
-
-            self.line_debug_pub.publish(self.bridge.cv2_to_imgmsg(line_debug, "bgr8"))
-
         hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
-        
-        # Создаем маску для пола площадки
-        floor_mask = self.floor_mask(hsv)
-        self.floor_mask_pub.publish(self.bridge.cv2_to_imgmsg(floor_mask, "mono8"))
 
-        self.objects_searcher.on_frame(image, mask_floor=floor_mask, hsv=hsv)
-        self.buildings_searcher.on_frame(image)
-
-    def ang_norm(self, ang):
-        a = fmod(fmod(ang, 2.0 * pi) + 2.0 * pi, 2.0 * pi)
-        if a > pi:
-            a -= 2.0 * pi
-        return a
-
-    def ang_normilize(self, w_min, h_min, ang):
-        if ang < -45:
-                ang = 90 + ang
-        if w_min < h_min and ang > 0:
-                ang = (90 - ang) * -1
-        if w_min > h_min and ang < 0:
-                ang = 90 + ang
-        return ang
-
-    # распознавание линии и повреждений
-    def line_detect(self, image):
-        debug = image.copy()
-
-        if self.line_end:
-            print("Line is end!")
-            return debug
-
-        if self.is_reversing:
-            pose = self.get_telemetry(frame_id = 'aruco_map')
-            ang_min = self.ang_norm(self.reverse_yaw - 0.15)
-            ang_max = self.ang_norm(self.reverse_yaw + 0.15)
-
-            if pose.yaw >= ang_min and pose.yaw <= ang_max:
-                print("Reverse was finished")
-                self.is_reversing = False
-            else:
-                return debug
-
-        height, width, _ = image.shape
-
-        blur = cv2.GaussianBlur(image, (5,5), 0)
-
-        # бинаризуем изображение из пространства HSV
-        # в этом пространстве легче выделить желтый цвет
-        hsv = cv2.cvtColor(blur, cv2.COLOR_BGR2HSV)
-        bin = cv2.inRange(hsv, \
-            (23, 48, 141), (52, 180, 255))
-
-        bin = bin[(height // 2) - 60:(height // 2) + 30, :]
-        kernel = np.ones((5,5),np.uint8)
-        bin = cv2.erode(bin, kernel)
-        bin = cv2.dilate(bin, kernel)
-
-        debug = cv2.rectangle(debug, (0, (height // 2) - 60), (width, (height // 2) + 30), (0, 255, 0), 2)
-
-        # ищем контуры линии
-        contours, _ = cv2.findContours(bin, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
-
-        compute_rect = [float('inf'), (0, 0), (0, 0), 0, (0, 0), (0, 0)]
-        center = 0.0
-        for cnt in contours:
-            # фильтрация по площади в пикселях
-            area = cv2.contourArea(cnt)
-            if cv2.contourArea(cnt) > 300:
-                rect = cv2.minAreaRect(cnt)
-                bx, by, bw, bh = cv2.boundingRect(cnt)
-                (x_min, y_min), (w_min, h_min), angle = rect
-
-                if True:
-                    box = cv2.boxPoints(rect)
-                    box = np.int0(box)
-                    # смещаем точки для корректного отображения
-                    box = [[p[0], p[1] + (height // 2) - 60] for p in box]
-
-                    # рисуем
-                    box = np.array(box)
-                    debug = cv2.drawContours(debug, [box], 0, (255, 120, 0), 2)
-                    debug = cv2.circle(debug, (int(x_min), int(y_min + (height // 2) - 60)), 5, (255, 120, 0), -1)
-
-                    # сохраняем контур с максимальной координатой y для последующего расчета скорости клевера
-                    if compute_rect[0] > box[0][1]:
-                        center = int(x_min)
-                        compute_rect = [box[0][1], (x_min, y_min), (w_min, h_min), angle, (bx, by), (bw, bh)]
-
-        # рассчитываем скорости коптера для движения за линией
-        if compute_rect[0] != float('inf'):
-            _, (x_min, y_min), (w_min, h_min), angle, (bx, by), (bw, bh) = compute_rect
-            
-            # если линия перевернута на 180 градусов, то поворачиваемся
-            angle = self.ang_normilize(w_min, h_min, angle)
-            y_min += (height // 2) - 60
-
-            frame_cn = (height / 2)
-            thr_low = frame_cn - 15
-
-            if y_min >= thr_low and self.first_reverse:
-                pose = self.get_telemetry(frame_id = 'aruco_map')
-                need_yaw = self.ang_norm(pose.yaw + pi)
-
-                print(f'Reverse line need_yaw={need_yaw}')
-
-                self.navigate(x = pose.x, y = pose.y, z = pose.z, \
-                     yaw = need_yaw, frame_id='aruco_map')
-                self.reverse_yaw = need_yaw
-                self.is_reversing = True
-
-            else:
-                pose = self.get_telemetry(frame_id = 'aruco_map')
-                image_draw = cv2.circle(debug, (int(center), int(y_min)), 8, (127, 127, 127), -1)
-
-                self.first_reverse = False
-                error = center - (width / 2)
-
-                # (self.LINE_HEIGHT - pose.z) * 0.04
-                self.set_velocity(vx = self.line_velocity, vy = error * self.k_velocity_y, vz = (self.LINE_HEIGHT - pose.z) * 0.04, \
-                    yaw = float('nan'), frame_id = 'body')
-                #self.set_yaw_rate(yaw_rate=angle * self.k_angle)
-
-            
-            self.line_end_time = int(self.line_end) * time.time()
-
-        else:
-            now = time.time()
-            if self.line_end_time == 0 and (not self.line_end): self.line_end_time = now
-            elif self.line_end_time > 0.0 and (now - self.line_end_time) >= self.line_end_thr:
-                self.line_end = True
-                self.set_velocity(vx = 0.0, vy = 0.0, vz = 0.0, \
-                    yaw = float('nan'), frame_id = 'body')
-
-        return debug
+        self.line_follower.update(image=image, hsv=hsv)
+        self.line_processor.flow(image=image.copy(), hsv=hsv)
+        self.workers_searcher.update(image=image, hsv=hsv)
+        self.buildings_searcher.update(image=image, hsv=hsv)
 
     def take_screenshot(self, name):
         self.screenshot_name = name
         self.is_screenshot_handled = True
+        print("Taking screenshot....")
         while self.is_screenshot_handled:
-            rospy.sleep(0.1)
+            rospy.sleep(1)
 
         print("Screenshot Successfully taked!")
+
+
+def strip_coordiante(point, left_corner, right_corner, offset=0.08):
+    point[0] = max(min(point[0], right_corner[0] + offset), left_corner[0] - offset)
+    point[1] = max(min(point[1], right_corner[1] + offset), left_corner[1] - offset)
+    return point
+
+def distance(a, b):
+    return math.sqrt(pow(a[0] - b[0], 2) + pow(a[1] - b[1], 2))
 
 def main():
     rospy.init_node('first_task', anonymous=True)
@@ -343,18 +240,22 @@ def main():
     BUILDINGS_CENTER = (float(BUILDINGS_LEFT_BOTTOM[0] + BUILDINGS_RIGHT_TOP[0]) / 2.0,
                         float(BUILDINGS_LEFT_BOTTOM[1] + BUILDINGS_RIGHT_TOP[1]) / 2.0)
 
-    BUILDINGS_HEIGHT = 2.0
-    BUILDINGS_SEARCH_HEIGHT = 1.5
+    BUILDINGS_HEIGHT = 1.8
+    BUILDINGS_SEARCH_HEIGHT = 1.8
     BUILDINGS_STEP = 1.0
     BUILDINGS_BORDER = 0.2
     BUILDINGS_SEARCH_VEL = 0.3
 
-    LINE_START = (1.2, 0.5)
+    LINE_START = (0.5, 0.5)
     #LINE_HEIGHT = 1.0
-    LINE_VEL = 0.2
+    LINE_VEL = 0.4
 
-    ENABLE_BUILDINGS = True
-    ENABLE_LINE = False
+    ENABLE_BUILDINGS = False
+    ENABLE_LINE = True
+
+    START_POINT = (6.0, 0.5)
+
+    HEIGHT_DETERMINATION_TRYES = 10
 
 
     try:
@@ -362,9 +263,11 @@ def main():
         node = NodeHandle()
 
         node.enable()
+        # switch to False
         node.takeoff(use_height = True)
 
         if ENABLE_BUILDINGS:
+            print("Fly to center of area buildings")
             node.navigate_wait(x=BUILDINGS_CENTER[0], y=BUILDINGS_CENTER[1], z=BUILDINGS_HEIGHT, speed=0.3, frame_id="aruco_map")
             rospy.sleep(2)
 
@@ -372,6 +275,7 @@ def main():
             node.take_screenshot(f'buildings_area')
 
             # fly by rect to find all buildings
+            print("Fly by rect to find buildings")
             point = [BUILDINGS_LEFT_BOTTOM[0] + BUILDINGS_BORDER, BUILDINGS_LEFT_BOTTOM[1] + BUILDINGS_BORDER]
             steps = float(BUILDINGS_RIGHT_TOP[1] - BUILDINGS_LEFT_BOTTOM[1] + (2 * BUILDINGS_BORDER)) / BUILDINGS_STEP
             for i in range(int(steps)):
@@ -389,32 +293,127 @@ def main():
                 point[1] += BUILDINGS_STEP
 
             node.buildings_searcher.disable()
-            buildings_coords = node.buildings_searcher.send_request()
-            building_height = node.buildings_searcher.get_height(buildings_coords)
 
-            node.navigate_wait(x=buildings_coords[0], y=buildings_coords[1], z=BUILDINGS_HEIGHT, speed=BUILDINGS_SEARCH_VEL, frame_id="aruco_map")
-            node.navigate_wait(x=buildings_coords[0], y=buildings_coords[1], z=building_height + 0.5, speed=BUILDINGS_SEARCH_VEL, frame_id="aruco_map")
+            # fly to all potential buildings to collect precision coords... i think :)
+            node.buildings_searcher.state = BuildingsDetector.States.Determination
+
+            # sort candidates to save time :)
+            candiate_indexes = [i[0] for i in sorted(enumerate(node.buildings_searcher.finded_buildings), key=lambda x: distance(np.mean(x[1][0], axis=0), (point[0], point[1] - BUILDINGS_STEP)))]
+            print(candiate_indexes)
+            for idx in candiate_indexes:
+                points, data = node.buildings_searcher.finded_buildings[idx]
+                mean = strip_coordiante(np.mean(points, axis=0), BUILDINGS_LEFT_BOTTOM, BUILDINGS_RIGHT_TOP)
+
+                print(f"Fly to potential building... with coords={mean[0]};{mean[1]}")
+                node.navigate_wait(x=mean[0], y=mean[1], z=BUILDINGS_SEARCH_HEIGHT, speed=BUILDINGS_SEARCH_VEL, frame_id="aruco_map")
+                rospy.sleep(5)
+
+                node.buildings_searcher.determinated_building_data = data
+                node.buildings_searcher.enable()
+                rospy.sleep(5)
+                node.buildings_searcher.disable()
+
+                determinated_coord, idx = node.buildings_searcher.get_point_of_determinated_building(mean, data)
+                determinated_coord = strip_coordiante(determinated_coord, BUILDINGS_LEFT_BOTTOM, BUILDINGS_RIGHT_TOP)
+                print(f"Fly to determinated building... with coords={determinated_coord[0]};{determinated_coord[1]}")
+                node.navigate_wait(x=determinated_coord[0], y=determinated_coord[1], z=BUILDINGS_SEARCH_HEIGHT, speed=BUILDINGS_SEARCH_VEL, frame_id="aruco_map", tolerance=0.05)
+                rospy.sleep(5)
+
+                min_dist = pow(10, 8)
+                for i in range(HEIGHT_DETERMINATION_TRYES):
+                    min_dist = min(rospy.wait_for_message('rangefinder/range', Range).range, min_dist)
+                    rospy.sleep(0.2)
+
+                real_height = min(round(float(BUILDINGS_SEARCH_HEIGHT - min_dist) / 0.25), 4)
+                if real_height < 1:
+                    print(f"Error occured when determinating height --> {real_height}")
+
+                    real_height = 1
+
+                node.buildings_searcher.determinated_buildings[idx][1].real_height = real_height
+
+            buildings_coord = node.buildings_searcher.send_request()
+            building_height = node.buildings_searcher.get_determinated_height(buildings_coord)
+            print(f"Move to server building with coord={buildings_coord[0]};{buildings_coord[1]} | height={building_height}")
+            node.navigate_wait(x=buildings_coord[0], y=buildings_coord[1], z=BUILDINGS_HEIGHT, speed=BUILDINGS_SEARCH_VEL, frame_id="aruco_map")
+            node.navigate_wait(x=buildings_coord[0], y=buildings_coord[1], z=building_height + 0.5, speed=BUILDINGS_SEARCH_VEL, frame_id="aruco_map")
 
             # take screenshot of building
-            node.take_screenshot(f'building_{buildings_coords[0]}_{buildings_coords[0]}')
+            node.take_screenshot(f'building_{buildings_coord[0]}_{buildings_coord[0]}')
 
         if ENABLE_LINE:
+            print("Fly to line start")
+            node.navigate_wait(x=START_POINT[0], y=START_POINT[1], z=node.FLIGHT_HEIGHT, speed=0.3, frame_id="aruco_map")
             node.navigate_wait(x=LINE_START[0], y=LINE_START[1], z=node.FLIGHT_HEIGHT, speed=0.3, frame_id="aruco_map")
-            node.navigate_wait(x=LINE_START[0], y=LINE_START[1], z=node.LINE_HEIGHT, speed=LINE_VEL, frame_id="aruco_map")
+            node.navigate_wait(x=LINE_START[0], y=LINE_START[1], z=node.line_follower.target_height, speed=LINE_VEL, frame_id="aruco_map")
             rospy.sleep(5)
 
-            node.first_reverse = False
-            node.is_line_enabled = True
-            node.objects_searcher.enable()
+            print("Follow by line")
+            node.line_follower.enable()
+            node.workers_searcher.enable()
+            node.line_processor.enable()
 
-            while not node.line_end:
+            while not (node.line_follower.state == LineFollower.States.End):
                 rospy.sleep(1)
 
-            node.is_line_enabled = False
-            node.objects_searcher.disable()
+            node.line_follower.disable()
+            node.workers_searcher.disable()
+            node.line_processor.disable()
+
+            print("========Road information========")
+            segments = node.line_processor.calculate_segments()
+            if segments is None:
+                segments = []
+
+            segments_ser = []
+            prev_end = None
+            road_length = 0
+            for (start, end, _, width) in segments:
+                if prev_end is not None:
+                    start = prev_end
+
+                length = math.sqrt(pow(start[0] - end[0], 2) + pow(start[1] - end[1], 2))
+                segment = Segment(
+                    border=Border(
+                        start=(start[0], start[1]),
+                        end=(end[0], end[1])
+                    ),
+                    length=length
+                )
+                road_length += length
+                prev_end = end
+
+                print(f"start=({start[0]}, {start[1]}); end=({end[0]}, {end[1]}); length={length}")
+
+                segments_ser.append(segment)
+            print(f"Road length={road_length}")
+
+            print("========Workers information========")
+            workers = node.workers_searcher.get_workers()
+            workers_ser = []
+            for (x, y) in workers:
+                invTs = node.line_processor.calc_inverse_transform_matrixes(segments)
+                is_working = node.line_processor.is_worker_working(x, y, 0.3, segments, invTs)
+
+                worker = Worker(
+                            coords=(x, y),
+                            is_working=is_working
+                        )
+                print(f"coords=({round(x, 3)}, {round(y, 3)}); is_working={is_working}")
+                workers_ser.append(worker)
+
+            code = node.rest_client.post_roads([
+                Road(
+                    length=road_length,
+                    segments=segments_ser,
+                    workers=workers_ser
+                )
+            ])
+            print(f'Send post message /roads to server...{code}')
 
         print("Go to land area")
-        node.navigate_wait(x=0.0, y=0.0, z=node.FLIGHT_HEIGHT, speed=0.3, frame_id="aruco_map")
+        node.navigate_wait(x=LINE_START[0], y=LINE_START[1], z=node.FLIGHT_HEIGHT, speed=0.3, frame_id="aruco_map")
+        node.navigate_wait(x=START_POINT[0], y=START_POINT[1], z=node.FLIGHT_HEIGHT, speed=0.3, frame_id="aruco_map")
         node.land()
 
         rospy.sleep(5)
